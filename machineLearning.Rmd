@@ -2,21 +2,83 @@
 title: "Machine Learning"
 author: "Luis Santos"
 date: "25 October 2015"
-output: html_document
+output:
+  html_document:
+      pandoc_args: [
+      "+RTS", "-K64m",
+      "-RTS"
+    ]
 ---
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r}
-summary(cars)
+```{r readrds,eval=TRUE,echo=FALSE}
+# eval, but do not print
+library(lattice)
+library(caret)
+set.seed(1234)
+kfd5rfs <-readRDS("kfold5_random_forests_Model.rds")
+crossv <-readRDS("rfcv_dt.rds")
 ```
 
-You can also embed plots, for example:
+## Purpose of exercise
+The objective of this task was to predict the manner in which a classification was performed in a study. The study analysed the way 6 subjects performed dumbell exercises, with sensors attached to their forearm, arm, belt and dumbell. The training dataset provided contains 159 columns of features (variables) and 1 column with a classification ('A', 'B', 'C', 'D' or 'E'), each assigned to a qualitative assessment of how the exercise was performed. This classification is what we are asked to predict.
 
-```{r, echo=FALSE}
-plot(cars)
+## Data Loading
+The data is available via URLs, so it can be locally downloaded and then uploaded by simply reading the csv files:
+```{r dataloading}
+data <- read.csv("pml-training.csv",header=T)
+testset <- read.csv("pml-testing.csv",header=T)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+The `testset` is the dataset to which the prediction model will be applied, so we do not want to look at it. As for the `data`, we can easily know it has 19622 rows of 160 variables. From the study's documentation, we also know that some calculations where done on the raw measurements following a time-window approach, and added to feature set. What this means is that, since the data was collected throughout time, after a given time-period (the window), summaries of the raw values within that window are calculated and added to the dataset, in the form of new features (columns).
+By looking at a summary of the data, we can identify these derived features, either by their name, or by the number of NAs/blanks:
+```{r datasummary,eval=TRUE}
+summary(data[ ,c(1:6,10,20)])
+```
+
+## Feature Selection
+As established, the summary variables contain values only for a small amount of rows, and many NAs or blanks, so they can be removed from the potential predictors list: columns with 'var', 'stddev', 'avg' and 'amplitude'. Other features, also calculated from raw, include 'kurtosis', 'skeweness', 'max' and 'min', we can also do away with.
+
+Furthermore, some features are intrinsically related to the dataset: the column 'X' (an index/count of the row), 'user_name' and 'timestamp' (3 columns that refer to timestamp values) are all tied in with the `classe` variable, and since they do not result from actual measurements, should be removed. This feature selection should be applied to both the test and training set, so a simple function will work:
+```{r featselfunction,eval=TRUE}
+quickPreprocess <- function(indata) {
+  # variables that are summaries of raw data have NA's, so we can remove those
+  excld1 <- grep("^(var_|stddev_|avg_|amplitude_)", colnames(indata))
+  # other summary data can also be removed (lots of blanks)
+  excld2 <- grep("^(kurtosis_|skewness_|max_|min_)|_window$", colnames(indata))
+  # there are also the X, user_name and three timestamp columns that can be removed
+  excld3 <- grep("X|user_name|_timestamp", colnames(indata))
+  return(indata[ ,-c(excld1, excld2, excld3)])
+}
+```
+
+## Random Forest(ing)
+As one of the most accurate algorithms, to the expense of some computation time and tweaking, we chose random forests to build our model.
+In order to improve the outcome of the model, and to assess accuracy and error, we chose to use k-fold cross validation with k=5, i.e., splitting the dataset into 5 equal parts for cyclic training on 4 and testing on 1:
+
+```{r randomforest,eval=FALSE}
+# random forests with k-fold (5) cross validation, all training set
+kf5 <- trainControl(method = "repeatedcv", number = 5)
+kfd5rfs <- train(classe ~ ., data=dt, method="rf", trControl=kf5)
+```
+```{r rfmodel,eval=TRUE,echo=TRUE}
+kfd5rfs
+```
+
+As we can see, we can expect and out-of-sample error of around 0.45%, with accuracy close to 100% (99.47% for the mtry model chosen).
+This is confirmed by plotting the estimated error from the cross-validated predcition performance function `rfcv`:
+```{r rfcv,eval=FALSE}
+rfcv(dt, dt$classe, cf.fold=5)
+```
+```{r rfcvplot,eval=TRUE,echo=FALSE}
+with(crossv, plot(n.var, error.cv, log="x", type="o", lwd=2,
+                  xlab='number of predictors', ylab='cross-validation error'))
+```
+
+Finally, all that is left is to run the model on the test dataset and predict the results, not forgetting to pre-process the data (trimming) in the same way we did for the train dataset.
+```{r predict,eval=FALSE}
+# predicting on the test set
+realtest <- quickPreprocess(testset)
+predict(kfd5rfs,realtest)
+```
+
+### Notes
+Some further work could have been done to reduce the number of predictors, namely running principal component analysis and removing higly correlated variables, however, at this point, the prediction model had been established, and as can be seen from the cross-validation error plot, there would be little gain in performance (apart from saving model processing time) by reducing the number of predictors to a minimum.
